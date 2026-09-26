@@ -1,5 +1,5 @@
-# Hello Telop
+# Hello world!
 
-Baseline test for the tmp-blender-telop pipeline.
+The first tmp-blender-telop experiment.
 
-It renders a simple 1280x720 lower-third telop with Blender's built-in font, writes `output/render.png`, saves `output/scene.blend`, and validates the actual rendered pixels.
+Nothing fancy yet: Blender renders **Hello world!** in white at the center of a black 1280x720 frame, saves the rendered PNG and the .blend scene, and validates the actual pixels.

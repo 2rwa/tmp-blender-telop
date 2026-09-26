@@ -15,47 +15,21 @@ BLEND_PATH = OUTPUT_DIR / "scene.blend"
 def clear_scene() -> None:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for datablocks in (
-        bpy.data.meshes,
-        bpy.data.curves,
-        bpy.data.materials,
-        bpy.data.cameras,
-        bpy.data.lights,
-    ):
-        for block in list(datablocks):
-            if block.users == 0:
-                datablocks.remove(block)
 
 
-def material(name: str, color):
+def make_emission_material(name: str):
     mat = bpy.data.materials.new(name)
-    mat.diffuse_color = (*color, 1.0)
     mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    bsdf.inputs["Base Color"].default_value = (*color, 1.0)
-    bsdf.inputs["Roughness"].default_value = 0.55
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    output = nodes.new("ShaderNodeOutputMaterial")
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    emission.inputs["Strength"].default_value = 2.0
+    links.new(emission.outputs["Emission"], output.inputs["Surface"])
     return mat
-
-
-def add_rect(name: str, location, scale, mat) -> None:
-    bpy.ops.mesh.primitive_cube_add(location=location)
-    obj = bpy.context.object
-    obj.name = name
-    obj.scale = scale
-    obj.data.materials.append(mat)
-
-
-def add_text(name: str, body: str, location, size: float, mat) -> None:
-    bpy.ops.object.text_add(location=location)
-    obj = bpy.context.object
-    obj.name = name
-    obj.data.body = body
-    obj.data.align_x = "LEFT"
-    obj.data.align_y = "CENTER"
-    obj.data.size = size
-    obj.data.extrude = 0.012
-    obj.data.bevel_depth = 0.004
-    obj.data.materials.append(mat)
 
 
 def build_scene() -> None:
@@ -78,22 +52,20 @@ def build_scene() -> None:
     scene.render.film_transparent = False
 
     scene.world.use_nodes = True
-    bg = scene.world.node_tree.nodes.get("Background")
-    bg.inputs["Color"].default_value = (0.006, 0.010, 0.020, 1.0)
-    bg.inputs["Strength"].default_value = 0.3
+    background = scene.world.node_tree.nodes.get("Background")
+    background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    background.inputs["Strength"].default_value = 0.0
 
-    dark = material("Background", (0.012, 0.020, 0.042))
-    panel = material("Panel", (0.030, 0.055, 0.095))
-    accent = material("Accent", (0.05, 0.55, 1.0))
-    white = material("TextWhite", (0.96, 0.98, 1.0))
-    muted = material("TextMuted", (0.48, 0.68, 0.86))
-
-    add_rect("Backdrop", (0.0, 0.0, 0.0), (6.4, 3.6, 0.05), dark)
-    add_rect("LowerThird", (0.0, -2.25, 0.12), (5.65, 0.78, 0.05), panel)
-    add_rect("Accent", (-5.48, -2.25, 0.20), (0.07, 0.78, 0.025), accent)
-
-    add_text("Headline", "Hello world!", (-5.15, -2.08, 0.22), 0.58, white)
-    add_text("Subline", "tmp-blender-telop / baseline render", (-5.12, -2.68, 0.22), 0.24, muted)
+    bpy.ops.object.text_add(location=(0.0, 0.0, 0.0))
+    text = bpy.context.object
+    text.name = "HelloWorld"
+    text.data.body = "Hello world!"
+    text.data.align_x = "CENTER"
+    text.data.align_y = "CENTER"
+    text.data.size = 1.15
+    text.data.extrude = 0.0
+    text.data.bevel_depth = 0.0
+    text.data.materials.append(make_emission_material("WhiteText"))
 
     camera_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", camera_data)

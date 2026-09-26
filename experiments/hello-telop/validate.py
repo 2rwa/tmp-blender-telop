@@ -7,8 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageStat
 
 
-ROOT = Path.cwd()
-OUTPUT_DIR = ROOT / "output"
+OUTPUT_DIR = Path.cwd() / "output"
 RENDER_PATH = OUTPUT_DIR / "render.png"
 
 
@@ -17,7 +16,7 @@ def main() -> None:
         raise SystemExit(f"render missing: {RENDER_PATH}")
 
     size_bytes = RENDER_PATH.stat().st_size
-    if size_bytes < 8_000:
+    if size_bytes < 4_000:
         raise SystemExit(f"render suspiciously small: {size_bytes} bytes")
 
     with Image.open(RENDER_PATH) as image:
@@ -27,22 +26,20 @@ def main() -> None:
 
         rgb = image.convert("RGB")
         gray = rgb.convert("L")
-        stat = ImageStat.Stat(gray)
-        luminance_stddev = float(stat.stddev[0])
+        stddev = float(ImageStat.Stat(gray).stddev[0])
 
-        # Lower-third area: expect bright text pixels from the actual render.
-        roi = gray.crop((100, 430, 1180, 700))
-        bright_pixels = sum(1 for value in roi.getdata() if value >= 180)
+        center = gray.crop((250, 220, 1030, 500))
+        bright_pixels = sum(1 for value in center.getdata() if value >= 150)
 
         tiny = rgb.resize((64, 36))
         colors = tiny.getcolors(maxcolors=64 * 36)
         unique_colors = len(colors) if colors is not None else 64 * 36
 
-    if luminance_stddev < 8.0:
-        raise SystemExit(f"render looks too uniform: stddev={luminance_stddev:.3f}")
-    if bright_pixels < 1200:
-        raise SystemExit(f"telop text region is not bright enough: bright_pixels={bright_pixels}")
-    if unique_colors < 12:
+    if stddev < 8.0:
+        raise SystemExit(f"render looks too uniform: stddev={stddev:.3f}")
+    if bright_pixels < 2500:
+        raise SystemExit(f"Hello world text was not detected: bright_pixels={bright_pixels}")
+    if unique_colors < 8:
         raise SystemExit(f"render has too little visual variation: {unique_colors} colors")
 
     result = {
@@ -50,8 +47,8 @@ def main() -> None:
         "size_bytes": size_bytes,
         "width": 1280,
         "height": 720,
-        "luminance_stddev": round(luminance_stddev, 3),
-        "telop_bright_pixels": bright_pixels,
+        "luminance_stddev": round(stddev, 3),
+        "hello_bright_pixels": bright_pixels,
         "unique_colors_64x36": unique_colors,
         "sha256": hashlib.sha256(RENDER_PATH.read_bytes()).hexdigest(),
     }

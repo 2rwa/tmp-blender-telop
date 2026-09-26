@@ -2,7 +2,17 @@
 
 Temporary Blender telop / caption rendering test repository driven by GitHub Actions.
 
-This repository reuses the rendering flow from `2rwa/tmp-blender` and is intended for rapid experiments with Blender text, lower thirds, captions, title cards, compositing, animation, fonts, layout, and related rendering behavior.
+This repository reuses the rendering flow from `2rwa/tmp-blender` and is intended for rapid experiments with Blender text, captions, title cards, compositing, animation, fonts, layout, and related rendering behavior.
+
+## Start simple
+
+The baseline experiment is deliberately just:
+
+> **Hello world!**
+
+White text, black background, 1280x720. No lower third, no decoration, no animation.
+
+Once that baseline render is confirmed, more elaborate telop experiments can be added independently under `experiments/<id>/`.
 
 ## Rendering flow
 
@@ -24,36 +34,10 @@ GitHub Actions
   -> deploy GitHub Pages
 ```
 
-## Layout
-
-```text
-experiments/
-  <experiment-id>/
-tools/
-  experiment.py
-  build_pages.py
-results/
-docs/
-output/              # ignored local/Actions work directory
-.github/workflows/
-  blender-experiment.yml
-```
-
-## Baseline experiment
-
-`hello-telop` renders a 1280x720 lower-third style telop containing **Hello world!**, saves the Blender scene, renders a PNG, and validates that the expected bright telop region is actually present.
-
 ## GitHub Pages
 
 https://2rwa.github.io/tmp-blender-telop/
 
 ## Storage policy
 
-This is a temporary experiment repository, so repository growth is not treated as an optimization target.
-
-- full outputs are retained as short-lived Actions artifacts
-- selected `.blend` files are committed under `results/<experiment>/`
-- media may also be committed when below the practical 95 MiB per-file guardrail
-- GitHub's hard per-file limits remain the final safety boundary
-
-Cleanup/history rewriting can be handled separately when this repository is retired.
+This is a temporary experiment repository, so repository growth is not treated as an optimization target. Selected .blend files and media may be committed directly when practical; full outputs are also retained as Actions artifacts.
