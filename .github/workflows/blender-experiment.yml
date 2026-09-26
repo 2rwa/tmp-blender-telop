@@ -1,0 +1,370 @@
+name: Blender telop experiment
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'results/**'
+      - 'docs/**'
+      - 'index.html'
+      - '.nojekyll'
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: Experiment folder name under experiments/
+        required: true
+        default: hello-telop
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-blender-telop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      experiments: ${{ steps.select.outputs.experiments }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compile shared tools
+        run: python3 -m py_compile tools/experiment.py tools/build_pages.py
+
+      - name: Select experiments
+        id: select
+        env:
+          MANUAL_EXPERIMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.experiment || '' }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          python3 tools/experiment.py discover \
+            --manual "$MANUAL_EXPERIMENT" \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" >> "$GITHUB_OUTPUT"
+
+  render:
+    needs: discover
+    if: needs.discover.outputs.experiments != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        experiment: ${{ fromJSON(needs.discover.outputs.experiments) }}
+    env:
+      EXPERIMENT: ${{ matrix.experiment }}
+      BLENDER_VERSION: "4.0.2"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Cheap Python preflight
+        run: |
+          python3 -m py_compile \
+            tools/experiment.py \
+            "experiments/$EXPERIMENT/scene.py" \
+            "experiments/$EXPERIMENT/validate.py"
+
+      - name: Compute render cache key
+        id: render-key
+        run: |
+          content_hash="$(
+            find "experiments/$EXPERIMENT" -type f \
+              ! -name 'validate.py' \
+              ! -name 'README.md' \
+              ! -name 'experiment.json' \
+              ! -name '*.pyc' \
+              ! -path '*/__pycache__/*' \
+              -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sha256sum \
+            | cut -d' ' -f1
+          )"
+          echo "key=blender-render-${RUNNER_OS}-${BLENDER_VERSION}-${EXPERIMENT}-${content_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore render checkpoint
+        id: render-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: output
+          key: ${{ steps.render-key.outputs.key }}
+
+      - name: Verify restored render checkpoint
+        if: steps.render-cache.outputs.cache-hit == 'true'
+        run: python3 tools/experiment.py check-render "$EXPERIMENT"
+
+      - name: Restore shared Blender runtime cache
+        id: blender-runtime-cache
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: .cache/blender-runtime
+          key: blender-runtime-${{ runner.os }}-x64-${{ env.BLENDER_VERSION }}-v1
+
+      - name: Build shared Blender runtime cache
+        if: steps.render-cache.outputs.cache-hit != 'true' && steps.blender-runtime-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          rm -rf .cache/blender-runtime
+          mkdir -p             .cache/blender-runtime/blender             .cache/blender-runtime/python             .cache/blender-runtime/egl             .cache/blender-runtime/apt
+
+          archive="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          base_url="https://download.blender.org/release/Blender4.0"
+
+          aria2c -x 8 -s 8 -d /tmp -o "$archive" "$base_url/$archive"
+          curl -fsSL "$base_url/blender-${BLENDER_VERSION}.sha256" -o /tmp/blender.sha256
+          (
+            cd /tmp
+            grep "  $archive$" blender.sha256 | sha256sum -c -
+          )
+
+          tar -xf "/tmp/$archive"             -C .cache/blender-runtime/blender             --strip-components=1
+
+          python3 -m pip install             --disable-pip-version-check             --no-compile             --target .cache/blender-runtime/python             "Pillow==10.2.0"
+
+          sudo apt-get update
+          (
+            cd .cache/blender-runtime/apt
+            apt-get download libegl1
+          )
+          dpkg-deb -x .cache/blender-runtime/apt/libegl1_*.deb .cache/blender-runtime/egl
+
+      - name: Configure shared Blender runtime
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "$GITHUB_WORKSPACE/.cache/blender-runtime/blender" >> "$GITHUB_PATH"
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/.cache/blender-runtime/python" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/.cache/blender-runtime/egl/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Verify Blender headless runtime
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        run: |
+          blender --version
+          python3 -c "from PIL import Image; print('Pillow OK')"
+          command -v xvfb-run
+          if ldd "$(command -v blender)" | grep -F "not found"; then
+            echo "Missing Blender shared library dependency."
+            exit 1
+          fi
+          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+            xvfb-run -a -s "-screen 0 1280x720x24" \
+            blender --background --python-expr "print('BLENDER_XVFB_OK')"
+
+      - name: Save shared Blender runtime cache
+        if: steps.render-cache.outputs.cache-hit != 'true' && steps.blender-runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .cache/blender-runtime
+          key: blender-runtime-${{ runner.os }}-x64-${{ env.BLENDER_VERSION }}-v1
+
+      - name: Record Blender version
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p output
+          blender --version | tee output/blender-version.txt
+
+      - name: Build scene
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+            xvfb-run -a -s "-screen 0 1280x720x24" \
+            blender --background --python "experiments/$EXPERIMENT/scene.py" 2>&1 | tee output/blender-scene.log
+          if grep -Fq "Traceback (most recent call last):" output/blender-scene.log; then
+            echo "Blender Python traceback detected."
+            exit 1
+          fi
+
+      - name: Save render checkpoint
+        if: steps.render-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: output
+          key: ${{ steps.render-key.outputs.key }}
+
+      - name: Validate experiment output
+        run: |
+          python3 "experiments/$EXPERIMENT/validate.py"
+          python3 tools/experiment.py check "$EXPERIMENT"
+
+      - name: Save validated output cache
+        uses: actions/cache/save@v6
+        with:
+          path: output
+          key: blender-validated-${{ matrix.experiment }}-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Show outputs
+        run: |
+          echo "experiment=$EXPERIMENT"
+          ls -lh output
+          cat output/validation.json
+
+      - name: Upload full experiment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-${{ matrix.experiment }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [discover, render]
+    if: needs.discover.outputs.experiments != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        experiment: ${{ fromJSON(needs.discover.outputs.experiments) }}
+    env:
+      EXPERIMENT: ${{ matrix.experiment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install publish dependencies
+        run: |
+          python3 -m pip install             --disable-pip-version-check             --no-compile             "Pillow==10.2.0"
+
+      - name: Restore validated output cache
+        uses: actions/cache/restore@v6
+        with:
+          path: output
+          key: blender-validated-${{ matrix.experiment }}-${{ runner.os }}-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Verify cached output
+        run: python3 tools/experiment.py check "$EXPERIMENT"
+
+      - name: Prepare git and rebase
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase "origin/${GITHUB_REF_NAME}"
+
+      - name: Generate persistent result
+        run: |
+          python3 tools/experiment.py publish "$EXPERIMENT" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-number "$GITHUB_RUN_NUMBER"
+
+      - name: Commit result
+        id: commit-result
+        run: |
+          git add "results/$EXPERIMENT/"
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No result changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: publish $EXPERIMENT result [skip ci]"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push result with one conflict retry
+        if: steps.commit-result.outputs.committed == 'true'
+        run: |
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            exit 0
+          fi
+          echo "Push raced with another writer; rebasing once and retrying."
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase "origin/${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  pages:
+    needs: publish
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Rebase onto published results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "${GITHUB_REF_NAME}"
+          git rebase "origin/${GITHUB_REF_NAME}"
+
+      - name: Build Pages gallery
+        run: python3 tools/build_pages.py
+
+      - name: Commit Pages gallery
+        id: commit-pages
+        run: |
+          git add index.html .nojekyll docs/
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "Pages gallery is already current."
+            exit 0
+          fi
+          git commit -m "chore: publish Pages gallery [skip ci]"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push Pages gallery
+        if: steps.commit-pages.outputs.committed == 'true'
+        run: |
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            exit 0
+          fi
+          echo "Pages push raced with another writer; rebuilding from latest main."
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+          python3 tools/build_pages.py
+          git add index.html .nojekyll docs/
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: publish Pages gallery [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  deploy_pages:
+    needs: pages
+    if: needs.pages.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout latest Pages content
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

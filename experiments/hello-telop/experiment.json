@@ -1,0 +1,8 @@
+{
+  "id": "hello-telop",
+  "title": "Hello Telop",
+  "description": "Baseline Blender lower-third telop render with Hello world! text.",
+  "preview_source": "render.png",
+  "required_outputs": ["render.png", "scene.blend"],
+  "repo_blends": ["scene.blend"]
+}
